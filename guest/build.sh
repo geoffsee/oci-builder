@@ -102,6 +102,10 @@ if [ ! -x "$cache/busybox" ]; then
         if ! grep -q '^CONFIG_STATIC=y$' .config; then
             printf '%s\n' 'CONFIG_STATIC=y' >> .config
         fi
+        # busybox 1.36.1's tc applet uses CBQ netlink structs that
+        # linux-libc-dev on Ubuntu 24.04 no longer ships. The guest does not
+        # configure traffic control.
+        sed -i 's/^CONFIG_TC=y/# CONFIG_TC is not set/' .config
         jobs=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 1)
         if command -v musl-gcc >/dev/null 2>&1; then
             link_musl_kernel_headers
