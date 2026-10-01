@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/buildah-ffi", "crates/oci-builder"]
+members = ["crates/buildah-ffi", "crates/oci-builder", "crates/rob-proto"]
 
 [workspace.package]
 version = "0.1.1"
@@ -14,6 +14,7 @@ rust-version = "1.85"
 # turns the path dependency into this crates.io requirement.
 [workspace.dependencies]
 buildah-ffi = { path = "crates/buildah-ffi", version = "0.1.1" }
+rob-proto = { path = "crates/rob-proto", version = "0.1.1" }
 
 [profile.release]
 lto = "thin"

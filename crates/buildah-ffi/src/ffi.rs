@@ -2,6 +2,8 @@
 
 //! Raw C ABI. Types match `shim/include/rob_abi.h` on LP64.
 
+#![cfg_attr(target_os = "macos", allow(dead_code))]
+
 use std::ffi::{c_char, c_void};
 
 pub(crate) type RobLogFn =

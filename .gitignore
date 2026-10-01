@@ -9,3 +9,7 @@ crates/buildah-ffi/shim/*.h
 
 .idea
 .DS_Store
+
+# Linux guest image produced by guest/build.sh. Not part of the source tree.
+guest/out/
+guest/cache/

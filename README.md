@@ -2,7 +2,7 @@
 
 Rust library and `oci-builder` CLI that embed [Buildah](https://github.com/podman-container-tools/buildah) in-process. There is no Buildah daemon and no `buildah` binary on `PATH`.
 
-Linux runs the engine. Other targets, including macOS, link a stub with the same ABI so the crate still compiles. The stub returns `unsupported`.
+Linux runs the engine in-process. On macOS the same API boots a small Linux guest through Apple's Virtualization framework and runs that engine inside it. Other targets link a stub that returns `unsupported`.
 
 ## Install from crates.io
 
@@ -22,7 +22,7 @@ CLI:
 cargo install oci-builder
 ```
 
-Both commands compile the crate on your machine. On Linux, `build.rs` builds the Buildah Go shim and links it into the binary, so the build needs Go 1.26 or newer, a C compiler, and pkg-config. libseccomp is optional: when pkg-config finds it, the seccomp build tag is turned on. On macOS and other non-Linux hosts the stub is linked instead. `startup()` and `oci-builder` then exit with code 8 and a message that Buildah is available on Linux only.
+Both commands compile the crate on your machine. On Linux, `build.rs` builds the Buildah Go shim and links it into the binary, so the build needs Go 1.26 or newer, a C compiler, and pkg-config. libseccomp is optional: when pkg-config finds it, the seccomp build tag is turned on. On macOS the CLI and library boot a Linux guest instead of linking Buildah into the Mac process. Build that guest on Linux with [`guest/build.sh`](guest/build.sh) and leave `guest/out/` next to the source tree, or point `ROB_GUEST_KERNEL` and `ROB_GUEST_INITRD` at the two files. The macOS build embeds those files with `include_bytes!`. The first boot writes them to `~/Library/Caches/oci-builder`. A build without them still looks for `guest/out` at runtime. `cargo run` and `cargo test` ad-hoc sign the binary with the `com.apple.security.virtualization` entitlement. `cargo build` on macOS signs through the `rustc` wrapper in [`.cargo/config.toml`](.cargo/config.toml). Other non-Linux hosts link a stub. `startup()` and `oci-builder` then exit with code 8 and a message that Buildah is available on Linux only.
 
 An image build also needs the host prerequisites under [Build requirements](#build-requirements). Rootless use needs user namespaces. A pull needs a signature policy. A `RUN` instruction with `oci` or `rootless` isolation needs runc or crun on `PATH`. `chroot` isolation and a scratch image that only uses `COPY` do not.
 
@@ -68,6 +68,36 @@ oci-builder --root /tmp/graph --runroot /tmp/run --storage-driver vfs \
 ```
 
 Stdout of `build` and `push` is `image_id=`, `digest=`, and `reference=`. Logs go to stderr. The exit code is the `ErrorCode` value. Clap's own usage errors stay exit code 2. `diagnose` prints the prerequisite report and exits 0 when the host is ready.
+
+Podman uses its own store. Export the tag to a `docker-archive`, then load that file. Pass the same `--root`, `--runroot`, `--storage-driver`, and `--signature-policy` as the build:
+
+```bash
+oci-builder --root /tmp/graph --runroot /tmp/run --storage-driver vfs \
+  --signature-policy policy.json \
+  push localhost/app:latest \
+  docker-archive:/tmp/app.tar:localhost/app:latest
+
+podman load -i /tmp/app.tar
+```
+
+On macOS the push runs in the guest. A destination such as `/tmp/app.tar` is inside that guest and is gone when the VM exits. `/mnt/policy` is the virtiofs share of the directory that contains `--signature-policy`. With the policy at `/tmp/rob/policy.json`, this guest path leaves `/tmp/rob/app.tar` on the Mac:
+
+```bash
+oci-builder --root /tmp/rob/graph --runroot /tmp/rob/run --storage-driver vfs \
+  --signature-policy /tmp/rob/policy.json \
+  push localhost/app:latest \
+  docker-archive:/mnt/policy/app.tar:localhost/app:latest
+
+podman load -i /tmp/rob/app.tar
+```
+
+[`examples/scratch-copy`](examples/scratch-copy) is `FROM scratch` and contains only `/hello.txt`, so the loaded image has no command to start. Copy the file out. `podman cp` to stdout writes a tar archive, and `tar -xO` prints `hello`:
+
+```bash
+podman create --name scratch-copy --entrypoint /hello.txt localhost/scratch-copy:latest
+podman cp scratch-copy:/hello.txt - | tar -xO
+podman rm scratch-copy
+```
 
 The sample Dockerfiles in [`examples/`](examples/) live in the source repository. They are not part of the published crates.
 
@@ -151,7 +181,7 @@ Older `github.com/containers/buildah` 1.43.x releases are affected by GO-2026-51
 
 ## Limitations
 
-- Real builds are Linux-only. The macOS and other non-Linux binaries link the stub. `oci-builder` calls `startup` before clap, so on those hosts `--help` exits 8 with a message that Buildah is available on Linux only.
+- On macOS the engine runs in a Linux guest. `startup()` does not boot it, so `--help` works. The guest starts on the first build, tag, or push. The kernel and initramfs come from `guest/build.sh` on a Linux machine of the same architecture and are embedded in the macOS binary when they are present at compile time. `RUN` with `oci` isolation still needs `runc` or `crun` in that guest; the first image does not include them. Scratch and `COPY` builds use `vfs` and `chroot`. Other non-Linux hosts link the stub and exit 8.
 - `RUN` under `oci` or `rootless` isolation needs runc or crun on `PATH`. They are not linked in.
 - Signing is not implemented. Verification uses the pure-Go OpenPGP tag.
 - One store per process.
@@ -162,7 +192,15 @@ Older `github.com/containers/buildah` 1.43.x releases are affected by GO-2026-51
 
 ## Release
 
-Pushing a tag `vX.Y.Z` runs [`.github/workflows/release.yml`](.github/workflows/release.yml). The workflow runs the CI tests, then publishes `buildah-ffi` and `oci-builder` with [crates.io trusted publishing](https://crates.io/docs/trusted-publishing). The tag must match `workspace.package.version`.
+Pushing a tag `vX.Y.Z` runs [`.github/workflows/release.yml`](.github/workflows/release.yml). The workflow runs the CI tests, publishes `rob-proto`, `buildah-ffi`, and `oci-builder` with [crates.io trusted publishing](https://crates.io/docs/trusted-publishing), and attaches binary archives to the GitHub release. The tag must match `workspace.package.version`.
+
+| Archive | Where it is built |
+| --- | --- |
+| `oci-builder-vX.Y.Z-x86_64-unknown-linux-gnu.tar.gz` | Ubuntu 24.04 |
+| `oci-builder-vX.Y.Z-aarch64-unknown-linux-gnu.tar.gz` | Ubuntu 24.04 on arm64 |
+| `oci-builder-vX.Y.Z-aarch64-apple-darwin.tar.gz` | macOS on Apple Silicon |
+
+Each archive contains the `oci-builder` binary. Linux binaries are linked on Ubuntu 24.04 and need that glibc plus `libseccomp.so.2`. The Apple Silicon archive is only the binary: the arm64 Linux job builds the guest, and the macOS build embeds `vmlinuz` and `initramfs` into it. The first run writes those images to `~/Library/Caches/oci-builder`.
 
 For each crate, the GitHub trusted publisher is workflow filename `release.yml` and environment `release`. Trusted publishing updates a crate that already exists, so the first upload of a crate still uses an API token. Later versions do not store a crates.io token in this repository.
 

@@ -5,7 +5,29 @@ use std::process::Command;
 use std::time::Duration;
 
 fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_oci-builder")
+    let path = env!("CARGO_BIN_EXE_oci-builder");
+    #[cfg(target_os = "macos")]
+    {
+        use std::sync::Once;
+        static SIGN: Once = Once::new();
+        SIGN.call_once(|| {
+            let entitlements =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/entitlements.plist");
+            let status = Command::new("codesign")
+                .args([
+                    "--force",
+                    "--sign",
+                    "-",
+                    "--entitlements",
+                    entitlements.to_str().unwrap(),
+                    path,
+                ])
+                .status()
+                .expect("codesign");
+            assert!(status.success(), "codesign failed for {path}");
+        });
+    }
+    path
 }
 
 struct TempDir(PathBuf);
@@ -326,6 +348,60 @@ fn run_build(
         .args(extra)
         .output()
         .unwrap()
+}
+
+#[test]
+fn macos_scratch_copy_example_when_guest_image_is_present() {
+    if !cfg!(target_os = "macos") {
+        eprintln!("skipping macOS guest build on this host");
+        return;
+    }
+    let guest_out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../guest/out");
+    let kernel = guest_out.join("vmlinuz");
+    let initrd = guest_out.join("initramfs");
+    if !kernel.is_file() || !initrd.is_file() {
+        eprintln!(
+            "skipping scratch-copy guest build; {} is missing",
+            guest_out.display()
+        );
+        return;
+    }
+
+    let dir = TempDir::new("macos-scratch");
+    let policy = dir.path().join("policy.json");
+    std::fs::write(
+        &policy,
+        r#"{"default":[{"type":"insecureAcceptAnything"}]}"#,
+    )
+    .unwrap();
+    let graph = dir.path().join("graph");
+    let run = dir.path().join("run");
+    let context = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/scratch-copy");
+    let output = Command::new(bin())
+        .env("ROB_GUEST_KERNEL", &kernel)
+        .env("ROB_GUEST_INITRD", &initrd)
+        .args([
+            "--root",
+            graph.to_str().unwrap(),
+            "--runroot",
+            run.to_str().unwrap(),
+            "--storage-driver",
+            "vfs",
+            "--signature-policy",
+            policy.to_str().unwrap(),
+            "build",
+            "--context",
+            context.to_str().unwrap(),
+            "-t",
+            "localhost/scratch-copy:latest",
+            "--pull",
+            "never",
+            "--isolation",
+            "chroot",
+        ])
+        .output()
+        .unwrap();
+    assert_build_ok(&output, "scratch-copy");
 }
 
 fn assert_build_ok(output: &std::process::Output, name: &str) {

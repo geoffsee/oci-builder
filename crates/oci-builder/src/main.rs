@@ -10,6 +10,9 @@ use buildah_ffi::{
 };
 use clap::{Parser, Subcommand, ValueEnum};
 
+#[cfg(target_os = "linux")]
+mod serve;
+
 fn main() -> ExitCode {
     match real_main() {
         Ok(()) => ExitCode::SUCCESS,
@@ -30,6 +33,10 @@ fn real_main() -> Result<(), Error> {
     // Re-exec and rootless setup look at argv before a parser can. This has
     // to happen before clap, or a helper child would be parsed as a CLI.
     startup()?;
+    #[cfg(target_os = "linux")]
+    if std::env::args().nth(1).as_deref() == Some("--engine-serve") {
+        return serve::engine_serve();
+    }
     let cli = Cli::parse();
     let command = cli.command.clone();
     let insecure = cli.insecure;

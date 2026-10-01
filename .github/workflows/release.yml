@@ -56,7 +56,7 @@ jobs:
           meta = json.loads(subprocess.check_output([
               "cargo", "metadata", "--format-version", "1", "--no-deps", "--locked",
           ]))
-          want = {"buildah-ffi", "oci-builder"}
+          want = {"rob-proto", "buildah-ffi", "oci-builder"}
           found = {pkg["name"]: pkg["version"] for pkg in meta["packages"] if pkg["name"] in want}
           missing = want - set(found)
           if missing:
@@ -64,10 +64,28 @@ jobs:
           for name, version in sorted(found.items()):
               if version != tag:
                   raise SystemExit(f"{name} is {version}, tag is v{tag}")
-          print(f"tag v{tag} matches buildah-ffi and oci-builder")
+          print(f"tag v{tag} matches rob-proto, buildah-ffi, and oci-builder")
           PY
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
+      - name: Publish rob-proto
+        run: cargo publish -p rob-proto --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+      - name: Wait until rob-proto is on the index
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          url="https://index.crates.io/ro/b-/rob-proto"
+          for _ in $(seq 1 60); do
+            if curl -fsSL -A "oci-builder-release" "$url" | grep -q "\"vers\":\"${version}\""; then
+              echo "rob-proto ${version} is on the index"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "rob-proto ${version} did not appear on the sparse index" >&2
+          exit 1
       - name: Publish buildah-ffi
         run: cargo publish -p buildah-ffi --locked
         env:
@@ -90,3 +108,167 @@ jobs:
         run: cargo publish -p oci-builder --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+
+  linux-binaries:
+    name: ${{ matrix.target }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            guest: false
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            guest: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.26"
+          cache: false
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-${{ matrix.target }}-release-${{ hashFiles('**/Cargo.lock', '**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-release-
+      - name: Install build tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y gcc pkg-config libseccomp-dev
+          if [ "${{ matrix.guest }}" = "true" ]; then
+            sudo apt-get install -y musl-tools musl-dev linux-libc-dev make bzip2 cpio curl
+            arch=$(uname -m)
+            dest="/usr/include/${arch}-linux-musl"
+            sudo mkdir -p "$dest"
+            sudo ln -sfn /usr/include/linux "$dest/linux"
+            sudo ln -sfn /usr/include/asm-generic "$dest/asm-generic"
+            sudo ln -sfn /usr/include/mtd "$dest/mtd"
+            if [ -d "/usr/include/${arch}-linux-gnu/asm" ]; then
+              sudo ln -sfn "/usr/include/${arch}-linux-gnu/asm" "$dest/asm"
+            fi
+          fi
+      - name: Build the release binary
+        run: cargo build --release --locked -p oci-builder
+      - name: Stage the binary
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/release/oci-builder dist/oci-builder
+          chmod 755 dist/oci-builder
+          ./dist/oci-builder --help >/dev/null
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/oci-builder
+      - name: Build the Apple Silicon guest
+        if: matrix.guest
+        run: ./guest/build.sh
+      - uses: actions/upload-artifact@v4
+        if: matrix.guest
+        with:
+          name: guest-aarch64
+          path: guest/out/
+
+  macos-binary:
+    name: aarch64-apple-darwin
+    needs: linux-binaries
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: macos-aarch64-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            macos-aarch64-release-
+      - uses: actions/download-artifact@v4
+        with:
+          name: guest-aarch64
+          path: guest/out
+      - name: Embed the guest and build
+        env:
+          ROB_REQUIRE_EMBEDDED_GUEST: "1"
+        run: cargo build --release --locked -p oci-builder
+      - name: Check the signature and that the guest was embedded
+        run: |
+          set -euo pipefail
+          bin=target/release/oci-builder
+          codesign --verify --verbose=2 "$bin"
+          codesign -d --entitlements - "$bin" | grep -q com.apple.security.virtualization
+          size=$(wc -c < "$bin")
+          test "$size" -gt 10000000
+          "$bin" --help >/dev/null
+          mkdir -p dist
+          cp "$bin" dist/oci-builder
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aarch64-apple-darwin
+          path: dist/oci-builder
+
+  github-release:
+    name: publish binary archives
+    needs: [publish, linux-binaries, macos-binary]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Package archives
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME}"
+          case "$version" in
+            v*) ;;
+            *)
+              echo "ref ${version} is not a v* tag" >&2
+              exit 1
+              ;;
+          esac
+          mkdir -p packages
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin; do
+            stage=$(mktemp -d)
+            cp "artifacts/${target}/oci-builder" "$stage/oci-builder"
+            chmod 755 "$stage/oci-builder"
+            tar -C "$stage" -czf "packages/oci-builder-${version}-${target}.tar.gz" oci-builder
+            rm -rf "$stage"
+          done
+          (cd packages && sha256sum ./*.tar.gz > SHA256SUMS)
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          notes=$(mktemp)
+          {
+            printf '%s\n' \
+              "## Binaries" \
+              "" \
+              "Each archive contains \`oci-builder\`. The Apple Silicon binary embeds the Linux kernel and initramfs and writes them to \`~/Library/Caches/oci-builder\` on first use. Linux binaries are built on Ubuntu 24.04 and need that glibc plus \`libseccomp.so.2\`." \
+              ""
+            gh api --method POST \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+              -f "tag_name=${tag}" --jq .body || true
+          } > "$notes"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" packages/* --clobber
+            gh release edit "$tag" --notes-file "$notes"
+          else
+            gh release create "$tag" --title "$tag" --notes-file "$notes" packages/*
+          fi

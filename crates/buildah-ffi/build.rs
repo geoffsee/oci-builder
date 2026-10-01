@@ -36,6 +36,9 @@ fn run() -> Result<(), String> {
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os != "linux" {
+        if target_os == "macos" {
+            embed_guest(&manifest, &out_dir)?;
+        }
         compile_stub();
         return Ok(());
     }
@@ -60,6 +63,82 @@ fn compile_stub() {
         .include("shim/include")
         .compile("robshim");
     println!("cargo:rustc-cfg=rob_stub");
+}
+
+/// Copy the Linux guest into OUT_DIR so macos.rs can `include_bytes!` it.
+/// A missing image becomes an empty file and the binary looks for guest/out
+/// at runtime. `ROB_REQUIRE_EMBEDDED_GUEST=1` makes that a build failure.
+fn embed_guest(manifest: &Path, out_dir: &Path) -> Result<(), String> {
+    println!("cargo:rerun-if-env-changed=ROB_GUEST_KERNEL");
+    println!("cargo:rerun-if-env-changed=ROB_GUEST_INITRD");
+    println!("cargo:rerun-if-env-changed=ROB_REQUIRE_EMBEDDED_GUEST");
+    println!("cargo:rerun-if-changed=../../guest/out/vmlinuz");
+    println!("cargo:rerun-if-changed=../../guest/out/initramfs");
+
+    let kernel_dest = out_dir.join("rob-guest-vmlinuz");
+    let initrd_dest = out_dir.join("rob-guest-initramfs");
+    match guest_sources(manifest)? {
+        Some((kernel, initrd)) => {
+            println!("cargo:rerun-if-changed={}", kernel.display());
+            println!("cargo:rerun-if-changed={}", initrd.display());
+            std::fs::copy(&kernel, &kernel_dest)
+                .map_err(|err| format!("copying {}: {err}", kernel.display()))?;
+            std::fs::copy(&initrd, &initrd_dest)
+                .map_err(|err| format!("copying {}: {err}", initrd.display()))?;
+            if std::fs::metadata(&kernel_dest)
+                .map(|m| m.len())
+                .unwrap_or(0)
+                == 0
+                || std::fs::metadata(&initrd_dest)
+                    .map(|m| m.len())
+                    .unwrap_or(0)
+                    == 0
+            {
+                return Err("refusing to embed an empty guest kernel or initramfs".into());
+            }
+        }
+        None => {
+            std::fs::write(&kernel_dest, []).map_err(|err| err.to_string())?;
+            std::fs::write(&initrd_dest, []).map_err(|err| err.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn guest_sources(manifest: &Path) -> Result<Option<(PathBuf, PathBuf)>, String> {
+    let kernel_env = env::var("ROB_GUEST_KERNEL");
+    let initrd_env = env::var("ROB_GUEST_INITRD");
+    let (pair, from_env) = match (kernel_env, initrd_env) {
+        (Ok(kernel), Ok(initrd)) => ((PathBuf::from(kernel), PathBuf::from(initrd)), true),
+        (Ok(_), Err(_)) | (Err(_), Ok(_)) => {
+            return Err("set both ROB_GUEST_KERNEL and ROB_GUEST_INITRD".into());
+        }
+        (Err(_), Err(_)) => {
+            let dir = manifest.join("../../guest/out");
+            ((dir.join("vmlinuz"), dir.join("initramfs")), false)
+        }
+    };
+    if pair.0.is_file() && pair.1.is_file() {
+        return Ok(Some(pair));
+    }
+    if env::var_os("ROB_REQUIRE_EMBEDDED_GUEST").is_some() {
+        return Err(format!(
+            "refusing to build without a Linux guest image. Looked for {} and {}.",
+            pair.0.display(),
+            pair.1.display()
+        ));
+    }
+    if from_env {
+        return Err(format!(
+            "ROB_GUEST_KERNEL ({}) or ROB_GUEST_INITRD ({}) is missing",
+            pair.0.display(),
+            pair.1.display()
+        ));
+    }
+    println!(
+        "cargo:warning=Linux guest images not found; the macOS binary will look for guest/out at runtime"
+    );
+    Ok(None)
 }
 
 fn emit_abi(manifest: &Path, out_dir: &Path) -> Result<(), String> {
@@ -104,15 +183,21 @@ fn link_go_archive(
         "exclude_graphdriver_devicemapper".to_string(),
         "containers_image_openpgp".to_string(),
     ];
-    let seccomp = pkg_config_exists("libseccomp");
-    if seccomp {
-        tags.push("seccomp".to_string());
+    let skip_optional = env::var_os("ROB_DISABLE_OPTIONAL_LIBS").is_some();
+    let seccomp = if skip_optional {
+        false
+    } else if pkg_config_exists("libseccomp") {
+        true
     } else {
         println!(
             "cargo:warning=libseccomp not found; building without the seccomp tag. RUN steps that install a seccomp profile will fail."
         );
+        false
+    };
+    if seccomp {
+        tags.push("seccomp".to_string());
     }
-    if pkg_config_exists("libapparmor") {
+    if !skip_optional && pkg_config_exists("libapparmor") {
         tags.push("apparmor".to_string());
     }
     if let Ok(extra) = env::var("ROB_GO_TAGS") {
@@ -173,7 +258,7 @@ fn link_go_archive(
     if seccomp {
         link_pkg_config("libseccomp")?;
     }
-    if pkg_config_exists("libapparmor") {
+    if !skip_optional && pkg_config_exists("libapparmor") {
         link_pkg_config("libapparmor")?;
     }
     Ok(())
