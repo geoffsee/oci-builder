@@ -257,6 +257,9 @@ jobs:
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job downloads artifacts and does not check out the repo, so
+          # gh cannot discover the repository from a git remote.
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
