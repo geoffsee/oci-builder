@@ -4,27 +4,42 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-fn bin() -> &'static str {
-    let path = env!("CARGO_BIN_EXE_oci-builder");
+fn bin() -> PathBuf {
+    // Cargo 1.99 sets CARGO_BIN_EXE_<name> only while it runs the harness.
+    // `env!` fails under `cargo clippy` and under `cargo test --no-run`.
+    // The release jobs compile with `--no-run` and exec the harness themselves,
+    // so fall back to the package binary next to `target/.../deps`.
+    let path = std::env::var_os("CARGO_BIN_EXE_oci-builder")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let exe = std::env::current_exe().expect("test executable");
+            exe.parent()
+                .and_then(|dir| dir.parent())
+                .map(|dir| dir.join(format!("oci-builder{}", std::env::consts::EXE_SUFFIX)))
+                .expect("oci-builder beside the test harness")
+        });
     #[cfg(target_os = "macos")]
     {
         use std::sync::Once;
         static SIGN: Once = Once::new();
+        let to_sign = path.clone();
         SIGN.call_once(|| {
             let entitlements =
                 Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/entitlements.plist");
             let status = Command::new("codesign")
-                .args([
-                    "--force",
-                    "--sign",
-                    "-",
-                    "--entitlements",
-                    entitlements.to_str().unwrap(),
-                    path,
-                ])
+                .arg("--force")
+                .arg("--sign")
+                .arg("-")
+                .arg("--entitlements")
+                .arg(&entitlements)
+                .arg(&to_sign)
                 .status()
                 .expect("codesign");
-            assert!(status.success(), "codesign failed for {path}");
+            assert!(
+                status.success(),
+                "codesign failed for {}",
+                to_sign.display()
+            );
         });
     }
     path
