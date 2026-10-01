@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/buildah-ffi", "crates/oci-builder", "crates/rob-proto"]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/geoffsee/oci-builder"
@@ -13,8 +13,8 @@ rust-version = "1.85"
 # Keep this version equal to workspace.package.version. cargo publish
 # turns the path dependency into this crates.io requirement.
 [workspace.dependencies]
-buildah-ffi = { path = "crates/buildah-ffi", version = "0.1.2" }
-rob-proto = { path = "crates/rob-proto", version = "0.1.2" }
+buildah-ffi = { path = "crates/buildah-ffi", version = "0.1.3" }
+rob-proto = { path = "crates/rob-proto", version = "0.1.3" }
 
 [profile.release]
 lto = "thin"
