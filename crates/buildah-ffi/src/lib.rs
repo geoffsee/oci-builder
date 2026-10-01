@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: Apache-2.0
+
+//! Embed Buildah in a Rust process.
+//!
+//! The engine is a Go c-archive behind a small C ABI. This crate exposes that
+//! ABI as [`Builder::build`] and [`Builder::push`]. There is no Buildah daemon
+//! and no `buildah` executable on `PATH`.
+//!
+//! On Linux, [`startup`] must be the first call in `main`, before threads are
+//! created and before arguments are parsed. Buildah re-executes the process
+//! for rootless user namespaces and for its own helper commands. On other
+//! operating systems the crate links a stub and [`startup`] returns
+//! [`ErrorCode::Unsupported`].
+//!
+//! ```no_run
+//! use buildah_ffi::{startup, BuildRequest, Builder, Config, StorageDriver};
+//!
+//! fn main() -> Result<(), buildah_ffi::Error> {
+//!     startup()?;
+//!     let builder = Builder::open(Config {
+//!         storage_driver: Some(StorageDriver::Vfs),
+//!         ..Config::default()
+//!     })?;
+//!     let info = builder.build(
+//!         BuildRequest::new("Dockerfile", ".").with_log(|record| {
+//!             eprint!("{}", record.message);
+//!         }),
+//!     )?;
+//!     println!("image_id={}", info.image_id);
+//!     builder.shutdown()?;
+//!     Ok(())
+//! }
+//! ```
+
+mod builder;
+mod config;
+mod error;
+mod ffi;
+
+pub use builder::{
+    BuildRequest, Builder, CancelToken, ImageInfo, LogRecord, LogStream, PushRequest,
+    buildah_version, startup,
+};
+pub use config::{Config, ImageFormat, Isolation, LogLevel, PullPolicy, StorageDriver};
+pub use error::{Error, ErrorCode};

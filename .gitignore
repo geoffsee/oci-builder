@@ -1,0 +1,11 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# Manual `go build -buildmode=c-archive` output in the shim directory.
+# Headers under shim/include/ are the checked-in ABI.
+crates/buildah-ffi/shim/*.a
+crates/buildah-ffi/shim/*.h
+
+.idea
+.DS_Store

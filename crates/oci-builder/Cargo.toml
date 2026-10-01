@@ -1,0 +1,15 @@
+[package]
+name = "oci-builder"
+version.workspace = true
+description = "CLI for building and pushing OCI images with embedded Buildah"
+readme = "../../README.md"
+documentation = "https://docs.rs/oci-builder"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+buildah-ffi.workspace = true
+clap = { version = "4", features = ["derive"] }

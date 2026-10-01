@@ -1,0 +1,16 @@
+[package]
+name = "buildah-ffi"
+version.workspace = true
+description = "Embed Buildah in Rust through a stable C ABI and a statically linked Go shim"
+readme = "../../README.md"
+documentation = "https://docs.rs/buildah-ffi"
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+
+[build-dependencies]
+cc = "1"

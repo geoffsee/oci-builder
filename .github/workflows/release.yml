@@ -1,0 +1,88 @@
+# Trusted publishing. On crates.io, each crate's Settings → Trusted Publishing
+# GitHub entry must use workflow filename release.yml and environment release.
+# The first version of a crate still has to be uploaded with an API token.
+# Later versions are published by pushing a vX.Y.Z tag that matches
+# workspace.package.version. No crates.io token is stored in this repository.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    name: publish to crates.io
+    needs: test
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: false
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y gcc pkg-config libseccomp-dev
+      - name: Require the tag to match the crate versions
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$tag" = "$GITHUB_REF_NAME" ]; then
+            echo "ref ${GITHUB_REF_NAME} is not a v* tag" >&2
+            exit 1
+          fi
+          python3 - "$tag" << 'PY'
+          import json, subprocess, sys
+          tag = sys.argv[1]
+          meta = json.loads(subprocess.check_output([
+              "cargo", "metadata", "--format-version", "1", "--no-deps", "--locked",
+          ]))
+          want = {"buildah-ffi", "oci-builder"}
+          found = {pkg["name"]: pkg["version"] for pkg in meta["packages"] if pkg["name"] in want}
+          missing = want - set(found)
+          if missing:
+              raise SystemExit(f"missing packages in metadata: {sorted(missing)}")
+          for name, version in sorted(found.items()):
+              if version != tag:
+                  raise SystemExit(f"{name} is {version}, tag is v{tag}")
+          print(f"tag v{tag} matches buildah-ffi and oci-builder")
+          PY
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - name: Publish buildah-ffi
+        run: cargo publish -p buildah-ffi --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+      - name: Wait until buildah-ffi is on the index
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          url="https://index.crates.io/bu/il/buildah-ffi"
+          for _ in $(seq 1 60); do
+            if curl -fsSL -A "oci-builder-release" "$url" | grep -q "\"vers\":\"${version}\""; then
+              echo "buildah-ffi ${version} is on the index"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "buildah-ffi ${version} did not appear on the sparse index" >&2
+          exit 1
+      - name: Publish oci-builder
+        run: cargo publish -p oci-builder --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
