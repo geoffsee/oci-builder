@@ -37,6 +37,16 @@ mod config;
 mod error;
 mod ffi;
 
+// Pull native/unshare_early.c into the link so its constructor runs.
+#[cfg(not(rob_stub))]
+unsafe extern "C" {
+    fn rob_unshare_keep() -> i32;
+}
+
+#[cfg(not(rob_stub))]
+#[used]
+static ROB_UNSHARE_KEEP: unsafe extern "C" fn() -> i32 = rob_unshare_keep;
+
 pub use builder::{
     BuildRequest, Builder, CancelToken, ImageInfo, LogRecord, LogStream, PushRequest,
     buildah_version, startup,

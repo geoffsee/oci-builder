@@ -157,6 +157,13 @@ fn link_go_archive(
         ));
     }
 
+    // Emit this link line before the c-archive so _containers_unshare resolves
+    // from librobshim.a. rob_unshare_keep is referenced from Rust so the
+    // constructor object is not dropped.
+    cc::Build::new()
+        .file("native/unshare_early.c")
+        .compile("rob_unshare_early");
+
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=static:+whole-archive=robshim");
     println!("cargo:rustc-link-lib=pthread");
