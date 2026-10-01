@@ -16,6 +16,7 @@ fn run() -> Result<(), String> {
     println!("cargo::rustc-check-cfg=cfg(rob_stub)");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=shim");
+    println!("cargo:rerun-if-changed=native");
     println!("cargo:rerun-if-env-changed=ROB_GO_TAGS");
     println!("cargo:rerun-if-env-changed=ROB_ALLOW_CROSS");
     println!("cargo:rerun-if-env-changed=PKG_CONFIG_PATH");
@@ -55,7 +56,7 @@ fn run() -> Result<(), String> {
 
 fn compile_stub() {
     cc::Build::new()
-        .file("shim/stub.c")
+        .file("native/stub.c")
         .include("shim/include")
         .compile("robshim");
     println!("cargo:rustc-cfg=rob_stub");
@@ -69,7 +70,7 @@ fn emit_abi(manifest: &Path, out_dir: &Path) -> Result<(), String> {
         .arg(manifest.join("shim/include"))
         .arg("-o")
         .arg(&bin)
-        .arg(manifest.join("shim/abi_size.c"))
+        .arg(manifest.join("native/abi_size.c"))
         .output()
         .map_err(|err| format!("compiling abi_size.c with {compiler}: {err}"))?;
     if !output.status.success() {
@@ -155,6 +156,13 @@ fn link_go_archive(
             String::from_utf8_lossy(&output.stderr)
         ));
     }
+
+    // Emit this link line before the c-archive so _containers_unshare resolves
+    // from librobshim.a. rob_unshare_keep is referenced from Rust so the
+    // constructor object is not dropped.
+    cc::Build::new()
+        .file("native/unshare_early.c")
+        .compile("rob_unshare_early");
 
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=static:+whole-archive=robshim");

@@ -2,8 +2,10 @@
 # GitHub entry must use workflow filename release.yml and environment release.
 # The first version of a crate still has to be uploaded with an API token.
 # Later versions are published by pushing a vX.Y.Z tag that matches
-# workspace.package.version. No crates.io token is stored in this repository.
-name: release
+# workspace.package.version. No long-lived token lives in GitHub secrets;
+# rust-lang/crates-io-auth-action exchanges OIDC for a short-lived token
+# passed to cargo publish as CARGO_REGISTRY_TOKEN (see crates.io docs).
+name: Release
 
 on:
   push:
