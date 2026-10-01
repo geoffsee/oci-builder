@@ -16,6 +16,10 @@ oci-builder \
 {"default":[{"type":"insecureAcceptAnything"}]}
 ```
 
+On macOS, build `guest/out/` with `guest/build.sh` on Linux first (arm64 Linux for Apple Silicon). A build with those files present embeds them into the binary. `cargo run -p oci-builder --` signs the binary and can run the same command. The guest is root, uses the `vfs` driver, and does not include `runc`, so keep `--isolation chroot` and `--pull never` for this image.
+
+Podman uses its own store. The [CLI](../README.md#cli) section shows how to `push` a tag to a `docker-archive` and `podman load` it. On macOS, write that archive under `/mnt/policy` (the guest's view of the `--signature-policy` directory) so the tar remains on the Mac after the VM exits. `scratch-copy` contains only `/hello.txt`. `podman cp` writes a tar stream, and `tar -xO` prints `hello`.
+
 | Directory | What it exercises | Expected result |
 | --- | --- | --- |
 | `scratch-copy` | `COPY` of one file onto `scratch` | image id and digest |
@@ -26,4 +30,4 @@ oci-builder \
 | `missing-copy` | `COPY` of a path that is not in the context | exit 5 |
 | `unknown-instruction` | an instruction Buildah does not recognize | exit 5 |
 
-`crates/oci-builder/tests/build_image.rs` builds this table when the engine is available. macOS links the stub and skips them.
+`crates/oci-builder/tests/build_image.rs` builds this table when the engine is available. On macOS it runs `scratch-copy` when `guest/out` is present and virtualization is available, and skips the table otherwise.

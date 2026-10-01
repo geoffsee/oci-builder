@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
+#![cfg_attr(target_os = "macos", allow(dead_code))]
+
 use std::fmt;
 
 /// Failure returned by the engine or by argument checking.

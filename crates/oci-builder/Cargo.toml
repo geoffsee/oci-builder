@@ -13,3 +13,7 @@ rust-version.workspace = true
 [dependencies]
 buildah-ffi.workspace = true
 clap = { version = "4", features = ["derive"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rob-proto.workspace = true
+libc = "0.2"

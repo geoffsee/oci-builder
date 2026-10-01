@@ -4,8 +4,45 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
-fn bin() -> &'static str {
-    env!("CARGO_BIN_EXE_oci-builder")
+fn bin() -> PathBuf {
+    // Cargo 1.99 sets CARGO_BIN_EXE_<name> only while it runs the harness.
+    // `env!` fails under `cargo clippy` and under `cargo test --no-run`.
+    // The release jobs compile with `--no-run` and exec the harness themselves,
+    // so fall back to the package binary next to `target/.../deps`.
+    let path = std::env::var_os("CARGO_BIN_EXE_oci-builder")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let exe = std::env::current_exe().expect("test executable");
+            exe.parent()
+                .and_then(|dir| dir.parent())
+                .map(|dir| dir.join(format!("oci-builder{}", std::env::consts::EXE_SUFFIX)))
+                .expect("oci-builder beside the test harness")
+        });
+    #[cfg(target_os = "macos")]
+    {
+        use std::sync::Once;
+        static SIGN: Once = Once::new();
+        let to_sign = path.clone();
+        SIGN.call_once(|| {
+            let entitlements =
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/entitlements.plist");
+            let status = Command::new("codesign")
+                .arg("--force")
+                .arg("--sign")
+                .arg("-")
+                .arg("--entitlements")
+                .arg(&entitlements)
+                .arg(&to_sign)
+                .status()
+                .expect("codesign");
+            assert!(
+                status.success(),
+                "codesign failed for {}",
+                to_sign.display()
+            );
+        });
+    }
+    path
 }
 
 struct TempDir(PathBuf);
@@ -326,6 +363,60 @@ fn run_build(
         .args(extra)
         .output()
         .unwrap()
+}
+
+#[test]
+fn macos_scratch_copy_example_when_guest_image_is_present() {
+    if !cfg!(target_os = "macos") {
+        eprintln!("skipping macOS guest build on this host");
+        return;
+    }
+    let guest_out = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../guest/out");
+    let kernel = guest_out.join("vmlinuz");
+    let initrd = guest_out.join("initramfs");
+    if !kernel.is_file() || !initrd.is_file() {
+        eprintln!(
+            "skipping scratch-copy guest build; {} is missing",
+            guest_out.display()
+        );
+        return;
+    }
+
+    let dir = TempDir::new("macos-scratch");
+    let policy = dir.path().join("policy.json");
+    std::fs::write(
+        &policy,
+        r#"{"default":[{"type":"insecureAcceptAnything"}]}"#,
+    )
+    .unwrap();
+    let graph = dir.path().join("graph");
+    let run = dir.path().join("run");
+    let context = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/scratch-copy");
+    let output = Command::new(bin())
+        .env("ROB_GUEST_KERNEL", &kernel)
+        .env("ROB_GUEST_INITRD", &initrd)
+        .args([
+            "--root",
+            graph.to_str().unwrap(),
+            "--runroot",
+            run.to_str().unwrap(),
+            "--storage-driver",
+            "vfs",
+            "--signature-policy",
+            policy.to_str().unwrap(),
+            "build",
+            "--context",
+            context.to_str().unwrap(),
+            "-t",
+            "localhost/scratch-copy:latest",
+            "--pull",
+            "never",
+            "--isolation",
+            "chroot",
+        ])
+        .output()
+        .unwrap();
+    assert_build_ok(&output, "scratch-copy");
 }
 
 fn assert_build_ok(output: &std::process::Output, name: &str) {

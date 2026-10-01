@@ -8,9 +8,10 @@
 //!
 //! On Linux, [`startup`] must be the first call in `main`, before threads are
 //! created and before arguments are parsed. Buildah re-executes the process
-//! for rootless user namespaces and for its own helper commands. On other
-//! operating systems the crate links a stub and [`startup`] returns
-//! [`ErrorCode::Unsupported`].
+//! for rootless user namespaces and for its own helper commands. On macOS,
+//! [`startup`] returns immediately and [`Builder::open`] runs that same Linux
+//! engine inside a Virtualization.framework guest. Other operating systems
+//! link a stub and [`startup`] returns [`ErrorCode::Unsupported`].
 //!
 //! ```no_run
 //! use buildah_ffi::{startup, BuildRequest, Builder, Config, StorageDriver};
@@ -36,6 +37,10 @@ mod builder;
 mod config;
 mod error;
 mod ffi;
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(any(target_os = "macos", test))]
+mod shares;
 
 // Pull native/unshare_early.c into the link so its constructor runs.
 #[cfg(not(rob_stub))]

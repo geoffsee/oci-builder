@@ -119,7 +119,9 @@ jobs:
           lines = toml_path.read_text().splitlines(True)
           in_pkg = False
           in_deps = False
-          saw_pkg = saw_dep = False
+          saw_pkg = False
+          saw_deps = set()
+          dep_prefixes = ("buildah-ffi = ", "rob-proto = ")
           for i, line in enumerate(lines):
               stripped = line.strip()
               if stripped.startswith("[") and stripped.endswith("]"):
@@ -130,7 +132,7 @@ jobs:
                       sys.exit(f"unexpected workspace version line: {line!r}")
                   lines[i] = f'version = "{nxt}"\n'
                   saw_pkg = True
-              if in_deps and line.startswith("buildah-ffi = "):
+              if in_deps and line.startswith(dep_prefixes):
                   new, n = re.subn(
                       rf'version = "{re.escape(current)}"',
                       f'version = "{nxt}"',
@@ -138,16 +140,16 @@ jobs:
                       count=1,
                   )
                   if n != 1:
-                      sys.exit("buildah-ffi version was not updated")
+                      sys.exit(f"version was not updated: {line!r}")
                   lines[i] = new
-                  saw_dep = True
-          if not (saw_pkg and saw_dep):
+                  saw_deps.add(line.split(" = ", 1)[0])
+          if not saw_pkg or saw_deps != {"buildah-ffi", "rob-proto"}:
               sys.exit("Cargo.toml is missing a version to bump")
           toml_path.write_text("".join(lines))
 
           lock_path = Path("Cargo.lock")
           parts = lock_path.read_text().split("[[package]]\n")
-          names = {"buildah-ffi", "oci-builder"}
+          names = {"rob-proto", "buildah-ffi", "oci-builder"}
           found = set()
           out = [parts[0]]
           for part in parts[1:]:
