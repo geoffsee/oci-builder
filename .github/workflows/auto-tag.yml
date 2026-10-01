@@ -1,0 +1,271 @@
+name: Auto Tag
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Cargo.lock"
+      - "crates/buildah-ffi/shim/go.sum"
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Which component to bump"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+concurrency:
+  group: auto-tag
+  cancel-in-progress: false
+
+permissions: read-all
+
+jobs:
+  tag:
+    permissions:
+      contents: write
+      actions: write
+      pull-requests: write
+    name: Bump version and tag
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      !startsWith(github.event.head_commit.message, 'chore(release):')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Compute next version
+        id: version
+        run: |
+          set -euo pipefail
+          CURRENT=$(python3 - << 'PY'
+          import sys
+          in_pkg = False
+          for line in open("Cargo.toml"):
+              stripped = line.strip()
+              if stripped.startswith("[") and stripped.endswith("]"):
+                  in_pkg = stripped == "[workspace.package]"
+                  continue
+              if in_pkg and line.startswith('version = "'):
+                  print(line.split('"')[1])
+                  sys.exit(0)
+          sys.exit("could not read workspace.package.version from Cargo.toml")
+          PY
+          )
+          if [ -z "$CURRENT" ]; then
+            echo "::error::could not read version from Cargo.toml"
+            exit 1
+          fi
+
+          BUMP="${{ github.event.inputs.bump || 'patch' }}"
+          IFS=. read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          PATCH=${PATCH%%-*}
+
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+            *) echo "::error::unknown bump type: $BUMP"; exit 1 ;;
+          esac
+
+          NEXT="$MAJOR.$MINOR.$PATCH"
+
+          if git rev-parse -q --verify "refs/tags/v$NEXT" >/dev/null; then
+            echo "::error::tag v$NEXT already exists"
+            exit 1
+          fi
+
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "next=$NEXT"       >> "$GITHUB_OUTPUT"
+          echo "branch=release/v$NEXT" >> "$GITHUB_OUTPUT"
+          echo "Bumping $CURRENT -> $NEXT ($BUMP)"
+
+      - name: Open release PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEXT: ${{ steps.version.outputs.next }}
+          CURRENT: ${{ steps.version.outputs.current }}
+          BRANCH: ${{ steps.version.outputs.branch }}
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Always rebuild the release branch from the job's main tip.
+          # A previous failed run may have left origin/release/vX.Y.Z behind
+          # main; plain push then fails non-fast-forward.
+          git fetch origin main
+          git checkout -B "$BRANCH" origin/main
+
+          # Bump after branch reset so origin/main doesn't wipe Cargo.toml.
+          # workspace.package.version and the buildah-ffi path dependency must
+          # stay equal: cargo publish turns that path dep into a crates.io
+          # requirement. Cargo.lock records the same versions for the two
+          # path packages (no registry source). Editing those fields avoids
+          # `cargo update`, which can rewrite the lockfile format.
+          python3 - << 'PY'
+          import os, re, sys
+          from pathlib import Path
+
+          current = os.environ["CURRENT"]
+          nxt = os.environ["NEXT"]
+
+          toml_path = Path("Cargo.toml")
+          lines = toml_path.read_text().splitlines(True)
+          in_pkg = False
+          in_deps = False
+          saw_pkg = saw_dep = False
+          for i, line in enumerate(lines):
+              stripped = line.strip()
+              if stripped.startswith("[") and stripped.endswith("]"):
+                  in_pkg = stripped == "[workspace.package]"
+                  in_deps = stripped == "[workspace.dependencies]"
+              if in_pkg and line.startswith("version = "):
+                  if line != f'version = "{current}"\n':
+                      sys.exit(f"unexpected workspace version line: {line!r}")
+                  lines[i] = f'version = "{nxt}"\n'
+                  saw_pkg = True
+              if in_deps and line.startswith("buildah-ffi = "):
+                  new, n = re.subn(
+                      rf'version = "{re.escape(current)}"',
+                      f'version = "{nxt}"',
+                      line,
+                      count=1,
+                  )
+                  if n != 1:
+                      sys.exit("buildah-ffi version was not updated")
+                  lines[i] = new
+                  saw_dep = True
+          if not (saw_pkg and saw_dep):
+              sys.exit("Cargo.toml is missing a version to bump")
+          toml_path.write_text("".join(lines))
+
+          lock_path = Path("Cargo.lock")
+          parts = lock_path.read_text().split("[[package]]\n")
+          names = {"buildah-ffi", "oci-builder"}
+          found = set()
+          out = [parts[0]]
+          for part in parts[1:]:
+              block_lines = part.splitlines(True)
+              name = None
+              has_source = False
+              for line in block_lines:
+                  if line.startswith("name = "):
+                      name = line.split('"')[1]
+                  elif line.startswith("source = "):
+                      has_source = True
+              if name in names and not has_source:
+                  replaced = False
+                  for i, line in enumerate(block_lines):
+                      if line.startswith("version = "):
+                          if line != f'version = "{current}"\n':
+                              sys.exit(f"{name} lock version is {line!r}")
+                          block_lines[i] = f'version = "{nxt}"\n'
+                          replaced = True
+                          break
+                  if not replaced:
+                      sys.exit(f"{name} has no version in Cargo.lock")
+                  found.add(name)
+              out.append("".join(block_lines))
+          missing = names - found
+          if missing:
+              sys.exit(f"missing lock packages: {sorted(missing)}")
+          lock_path.write_text("[[package]]\n".join(out))
+          PY
+
+          git add Cargo.toml Cargo.lock
+          if git diff --cached --quiet; then
+            echo "::error::nothing to commit for v$NEXT (Cargo.toml already at that version?)"
+            exit 1
+          fi
+          git commit -m "chore(release): v$NEXT"
+
+          # Refresh remote-tracking ref so --force-with-lease can replace a stale branch
+          git fetch origin "refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null || true
+          git push -u origin "HEAD:refs/heads/$BRANCH" --force-with-lease
+
+          # Prefer an open PR; otherwise create (closed prior attempts don't block)
+          PR=$(gh pr list --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$PR" ]; then
+            echo "Reusing open PR #$PR"
+          else
+            gh pr create \
+              --title "chore(release): v$NEXT" \
+              --body "$(printf '%s\n' \
+                "Automated version bump \`$CURRENT\` → \`$NEXT\` from Auto Tag." \
+                "" \
+                "CI runs on this pull request before merge." \
+                "" \
+                "After merge, Auto Tag will create tag \`v$NEXT\` and dispatch the Release workflow.")" \
+              --base main \
+              --head "$BRANCH"
+            PR=$(gh pr view "$BRANCH" --json number --jq .number)
+            echo "Opened PR #$PR"
+          fi
+
+          echo "number=$PR" >> "$GITHUB_OUTPUT"
+
+          # Squash-merge when required checks pass.
+          gh pr merge "$PR" --auto --squash || {
+            echo "::warning::Could not enable auto-merge (may already be enabled or admin merge required)."
+          }
+
+          echo "### Release PR" >> "$GITHUB_STEP_SUMMARY"
+          echo "Opened/updated PR #$PR for \`v$NEXT\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "Waiting for required checks, then auto-merge." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Wait for PR merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ steps.pr.outputs.number }}
+          NEXT: ${{ steps.version.outputs.next }}
+        run: |
+          set -euo pipefail
+          # Up to ~30 minutes for CI
+          for i in $(seq 1 90); do
+            STATE=$(gh pr view "$PR" --json state,mergedAt --jq '{state,mergedAt}')
+            MERGED=$(echo "$STATE" | jq -r '.mergedAt // empty')
+            OPEN=$(echo "$STATE" | jq -r '.state')
+            if [ -n "$MERGED" ]; then
+              echo "PR #$PR merged at $MERGED"
+              exit 0
+            fi
+            if [ "$OPEN" = "CLOSED" ]; then
+              echo "::error::PR #$PR was closed without merging"
+              exit 1
+            fi
+            echo "Waiting for merge ($i/90)..."
+            sleep 20
+          done
+          echo "::error::Timed out waiting for PR #$PR to merge"
+          exit 1
+
+      - name: Tag merge commit and dispatch Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEXT: ${{ steps.version.outputs.next }}
+          CURRENT: ${{ steps.version.outputs.current }}
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git checkout main
+          git reset --hard origin/main
+
+          if git rev-parse -q --verify "refs/tags/v$NEXT" >/dev/null; then
+            echo "Tag v$NEXT already exists"
+          else
+            git tag -a "v$NEXT" -m "Release v$NEXT"
+            git push origin "v$NEXT"
+            echo "Tagged v$NEXT"
+          fi
+
+          # GITHUB_TOKEN tag pushes do not fire `on: push: tags`
+          gh workflow run release.yml --ref "v${NEXT}"
+
+          echo "### Released \`v$NEXT\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "Bumped from \`$CURRENT\`. Release workflow dispatched." >> "$GITHUB_STEP_SUMMARY"

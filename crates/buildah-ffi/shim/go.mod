@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/moby/sys/capability v0.4.0
 	github.com/opencontainers/image-spec v1.1.1
-	github.com/sirupsen/logrus v1.9.4
+	github.com/sirupsen/logrus v1.10.2
 	go.podman.io/buildah v1.45.1
 	go.podman.io/common v0.69.2
 	go.podman.io/image/v5 v5.41.2

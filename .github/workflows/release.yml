@@ -11,6 +11,8 @@ on:
   push:
     tags:
       - "v*"
+  # Auto Tag pushes the tag with GITHUB_TOKEN, which does not fire push.
+  workflow_dispatch:
 
 permissions:
   contents: read
