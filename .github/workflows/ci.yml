@@ -106,13 +106,19 @@ jobs:
 
   linux-rootless:
     name: rootless build and push
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       registry:
         image: registry:2
         ports:
           - 5000:5000
     steps:
+      - name: Allow unprivileged user namespaces
+        run: |
+          set -euo pipefail
+          echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/99-userns.conf >/dev/null
+          echo 'kernel.unprivileged_userns_clone=1' | sudo tee -a /etc/sysctl.d/99-userns.conf >/dev/null
+          sudo sysctl --system
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-go@v7
@@ -132,15 +138,18 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc pkg-config libseccomp-dev uidmap fuse-overlayfs slirp4netns curl
-      - name: Allow unprivileged user namespaces
+          sudo apt-get install -y gcc pkg-config libseccomp-dev uidmap fuse-overlayfs slirp4netns curl crun runc
+      - name: Configure subordinate IDs
         run: |
           set -euo pipefail
-          sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0 || true
-          sudo sysctl kernel.unprivileged_userns_clone=1 || true
           user=$(id -un)
           grep -q "^${user}:" /etc/subuid || echo "${user}:100000:65536" | sudo tee -a /etc/subuid >/dev/null
           grep -q "^${user}:" /etc/subgid || echo "${user}:100000:65536" | sudo tee -a /etc/subgid >/dev/null
+      - name: Verify rootless user namespaces
+        run: |
+          set -euo pipefail
+          test "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns)" = "0"
+          unshare -Ur true
       - name: Wait for the registry
         run: |
           for _ in $(seq 1 30); do
