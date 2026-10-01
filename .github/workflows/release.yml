@@ -69,7 +69,7 @@ jobs:
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
       - name: Publish rob-proto
-        run: cargo publish -p rob-proto --locked
+        run: bash .github/workflows/publish-crate.sh rob-proto
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - name: Wait until rob-proto is on the index
@@ -87,7 +87,7 @@ jobs:
           echo "rob-proto ${version} did not appear on the sparse index" >&2
           exit 1
       - name: Publish buildah-ffi
-        run: cargo publish -p buildah-ffi --locked
+        run: bash .github/workflows/publish-crate.sh buildah-ffi
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - name: Wait until buildah-ffi is on the index
@@ -105,7 +105,7 @@ jobs:
           echo "buildah-ffi ${version} did not appear on the sparse index" >&2
           exit 1
       - name: Publish oci-builder
-        run: cargo publish -p oci-builder --locked
+        run: bash .github/workflows/publish-crate.sh oci-builder
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
@@ -159,6 +159,12 @@ jobs:
           fi
       - name: Build the release binary
         run: cargo build --release --locked -p oci-builder
+      - name: Allow unprivileged user namespaces
+        run: |
+          set -euo pipefail
+          echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee /etc/sysctl.d/99-userns.conf >/dev/null
+          echo 'kernel.unprivileged_userns_clone=1' | sudo tee -a /etc/sysctl.d/99-userns.conf >/dev/null
+          sudo sysctl --system
       - name: Stage the binary
         run: |
           set -euo pipefail
