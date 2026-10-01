@@ -408,6 +408,17 @@ impl<'a> Cursor<'a> {
         Ok(slice)
     }
 
+    /// `min_each` is the smallest encoded size of one element. A count larger
+    /// than the remaining frame cannot be allocated.
+    fn bounded_count(&mut self, min_each: usize) -> io::Result<usize> {
+        let len = self.u32()? as usize;
+        let remaining = self.buf.len().saturating_sub(self.at);
+        if min_each == 0 || len > remaining / min_each {
+            return Err(invalid("list is longer than the frame"));
+        }
+        Ok(len)
+    }
+
     fn u32(&mut self) -> io::Result<u32> {
         let mut raw = [0u8; 4];
         raw.copy_from_slice(self.bytes(4)?);
@@ -441,7 +452,7 @@ impl<'a> Cursor<'a> {
     }
 
     fn strs(&mut self) -> io::Result<Vec<String>> {
-        let len = self.u32()? as usize;
+        let len = self.bounded_count(4)?;
         let mut out = Vec::with_capacity(len);
         for _ in 0..len {
             out.push(self.str()?);
@@ -450,7 +461,7 @@ impl<'a> Cursor<'a> {
     }
 
     fn pairs(&mut self) -> io::Result<Vec<(String, String)>> {
-        let len = self.u32()? as usize;
+        let len = self.bounded_count(8)?;
         let mut out = Vec::with_capacity(len);
         for _ in 0..len {
             out.push((self.str()?, self.str()?));
@@ -591,5 +602,16 @@ mod tests {
         buf.extend([0u8; 8]);
         let err = read_guest_frame(&mut Cursor::new(buf)).unwrap_err();
         assert!(err.to_string().contains("limit"));
+    }
+
+    #[test]
+    fn rejects_a_list_count_larger_than_the_frame() {
+        let count = 0x0100_0000u32.to_le_bytes();
+        let mut cursor = crate::Cursor::new(&count);
+        let err = cursor.strs().unwrap_err();
+        assert!(err.to_string().contains("longer than the frame"));
+        let mut cursor = crate::Cursor::new(&count);
+        let err = cursor.pairs().unwrap_err();
+        assert!(err.to_string().contains("longer than the frame"));
     }
 }

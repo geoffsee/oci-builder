@@ -39,6 +39,7 @@ mod error;
 mod ffi;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(any(target_os = "macos", test))]
 mod shares;
 
 // Pull native/unshare_early.c into the link so its constructor runs.

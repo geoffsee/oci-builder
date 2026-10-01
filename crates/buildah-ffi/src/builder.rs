@@ -97,6 +97,7 @@ impl CancelToken {
         }
     }
 
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) fn raw_id(&self) -> u64 {
         self.inner.id
     }
@@ -777,7 +778,7 @@ unsafe extern "C" fn log_trampoline(
         let message = if data.is_null() || len == 0 {
             String::new()
         } else {
-            let bytes = unsafe { std::slice::from_raw_parts(data as *const u8, len) };
+            let bytes = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) };
             String::from_utf8_lossy(bytes).into_owned()
         };
         (target.callback)(LogRecord {

@@ -10,6 +10,7 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Arc, Mutex};
@@ -458,8 +459,13 @@ fn ensure_guest(
         return Ok(existing.exports.clone());
     }
     let mut started = boot(kernel, initrd, exports, write)?;
-    let init = init_frame(config, exports)?;
-    exchange(&mut started.read, write, &HostFrame::Init(init), None)?;
+    let initialized = init_frame(config, exports)
+        .and_then(|init| exchange(&mut started.read, write, &HostFrame::Init(init), None));
+    if let Err(err) = initialized {
+        started.stop();
+        *write.lock().unwrap_or_else(|poison| poison.into_inner()) = None;
+        return Err(err);
+    }
     let booted = started.exports.clone();
     *guest = Some(started);
     Ok(booted)
@@ -996,13 +1002,14 @@ fn materialize_embedded() -> Result<(PathBuf, PathBuf), Error> {
 fn guest_cache_dir() -> PathBuf {
     match env::var("HOME") {
         Ok(home) if !home.is_empty() => PathBuf::from(home).join("Library/Caches/oci-builder"),
-        _ => env::temp_dir().join("oci-builder-guest"),
+        // A per-uid directory, not a shared /tmp name another account can pre-create.
+        _ => env::temp_dir().join(format!("oci-builder-guest-{}", unsafe { libc::getuid() })),
     }
 }
 
 fn write_embedded(path: &Path, bytes: &[u8]) -> Result<(), Error> {
-    if let Ok(meta) = std::fs::metadata(path) {
-        if meta.len() == bytes.len() as u64 {
+    if let Ok(existing) = std::fs::read(path) {
+        if existing == bytes {
             return Ok(());
         }
     }
@@ -1013,6 +1020,7 @@ fn write_embedded(path: &Path, bytes: &[u8]) -> Result<(), Error> {
                 format!("creating {}: {err}", parent.display()),
             )
         })?;
+        let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
     }
     let tmp = path.with_extension("partial");
     std::fs::write(&tmp, bytes).map_err(|err| {

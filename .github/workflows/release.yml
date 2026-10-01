@@ -35,7 +35,7 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
@@ -78,7 +78,7 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           url="https://index.crates.io/ro/b-/rob-proto"
           for _ in $(seq 1 60); do
-            if curl -fsSL -A "oci-builder-release" "$url" | grep -q "\"vers\":\"${version}\""; then
+            if curl --proto '=https' --tlsv1.2 -fsSL -A "oci-builder-release" "$url" | grep -q "\"vers\":\"${version}\""; then
               echo "rob-proto ${version} is on the index"
               exit 0
             fi
@@ -96,7 +96,7 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           url="https://index.crates.io/bu/il/buildah-ffi"
           for _ in $(seq 1 60); do
-            if curl -fsSL -A "oci-builder-release" "$url" | grep -q "\"vers\":\"${version}\""; then
+            if curl --proto '=https' --tlsv1.2 -fsSL -A "oci-builder-release" "$url" | grep -q "\"vers\":\"${version}\""; then
               echo "buildah-ffi ${version} is on the index"
               exit 0
             fi
@@ -125,7 +125,7 @@ jobs:
             guest: true
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - uses: actions/setup-go@v7
         with:
           go-version: "1.26"
@@ -185,7 +185,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - uses: actions/cache@v6
         with:
           path: |

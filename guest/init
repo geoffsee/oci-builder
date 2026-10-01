@@ -39,7 +39,9 @@ mkdir -p /mnt/.host-root /mnt/root /mnt/runroot
 if mount -t virtiofs root /mnt/.host-root 2>/dev/null; then
     img=/mnt/.host-root/rob-store.img
     if [ ! -s "$img" ]; then
-        dd if=/dev/zero of="$img" bs=1M seek=256 count=0
+        # Sparse 8 GiB. vfs stores a full copy of each layer, so 256 MiB
+        # fills up on an ordinary base image.
+        dd if=/dev/zero of="$img" bs=1M seek=8192 count=0
         mke2fs -F "$img" >/dev/null
     fi
     if ! mount -t ext4 "$img" /mnt/root 2>/dev/null; then
