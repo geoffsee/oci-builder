@@ -10,8 +10,8 @@ if ! command -v cargo >/dev/null 2>&1; then
 	exit 1
 fi
 
-echo "pre-push: cargo test (lib, bins, examples)"
-cargo test --workspace --locked --lib --bins --examples
+echo "pre-push: cargo test (lib, bins, examples, tests)"
+cargo test --workspace --locked --lib --bins --examples --tests
 
 echo "pre-push: cargo test (doc)"
 cargo test --workspace --locked --doc
